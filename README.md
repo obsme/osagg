@@ -15,7 +15,7 @@ osagg  ── parse (sqlglot) ── plan ──┬─ filters      → bool que
                                     ├─ GROUP BY     → composite sources (terms / date_histogram / histogram)
                                     ├─ aggregates   → sum / value_count / min / max / cardinality /
                                     │                 percentiles / extended_stats / filter sub-aggs
-                                    └─ raw rows     → search + sort + size, PIT + search_after
+                                    └─ raw rows     → search + sort + size; beyond a page PIT + search_after (or scroll)
    ▲                                      │
    └──── DuckDB (in-memory, no file / network / extension access) runs the rest
 ```
@@ -105,7 +105,7 @@ osagg://TRINO_USER:PWD@trino-host:8443/default?transport=trino&trino_http_scheme
 | `SUM(CASE WHEN c THEN x ELSE 0 END)`, `agg(x) FILTER (WHERE c)`, `COUNT_IF(c)` | `filter` sub-aggregation |
 | any other GROUP BY / WHERE expression over grouped columns (`CASE … 'Others'`, `UPPER`, `COALESCE`, `EXTRACT(hour …)`, `strftime`, Sunday weeks) | **two-level**: OpenSearch groups by the underlying columns (timestamps at the needed grain), DuckDB re-aggregates the buckets (sum / count / min / max / avg) |
 | `ORDER BY key LIMIT n` / `LIMIT n` | composite stops after n buckets |
-| `SELECT … WHERE … ORDER BY col LIMIT n OFFSET m` | search with sort / size, point-in-time + `search_after` beyond 10 000 |
+| `SELECT … WHERE … ORDER BY col LIMIT n OFFSET m` | search with sort / size; beyond 10 000 rows, point-in-time + `search_after` (a scroll on clusters that do not sort on `_shard_doc`, e.g. OpenSearch 2.x) |
 | virtual datasets `SELECT … FROM (SELECT * FROM idx WHERE …) AS virtual_table` | flattened into one pushed-down query |
 | `JOIN` / `LEFT JOIN` / `USING` of two or more indices on equal fields, in aggregating queries | each index grouped by its join keys and GROUP BY columns in OpenSearch, keys of the smaller indices pushed to the bigger ones as `terms`; DuckDB joins the grouped rows (see Joins of indices) |
 

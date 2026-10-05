@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from osagg.errors import OperationalError, PushdownError
+from osagg.errors import OperationalError, ProgrammingError, PushdownError
 from osagg.metadata import Field
 from osagg.planner import AggScan, DocScan
 from osagg.transport import Transport
@@ -26,6 +26,7 @@ def _short_of_memory(ex: Exception) -> bool:
     return any(s in str(ex) for s in ("circuit_breaking_exception", "Data too large"))
 
 TRINO_MAX_DOCS = 10_000   # index.max_result_window; raw_query has no point-in-time
+NO_SHARD_DOC: set[str] = set()   # clusters that do not page a point in time on _shard_doc (read by scroll)
 
 ARROW_TYPES = {
     "VARCHAR": pa.string(),
@@ -250,45 +251,95 @@ class Executor:
         n_rows = 0
         if target == 0:
             pass
-        elif target <= self.doc_page_size:
-            body = dict(base, size=target)
+        elif scan.limit is None and target > self.doc_page_size:
+            tables, n_rows = self._deep_docs(scan, base, target, stats)     # counted: more than a page
+        else:
+            # one search first: most reads with a large LIMIT (SQL Lab asks 100,000 rows) match less than a page
+            body = dict(base, size=min(target, self.doc_page_size))
             if scan.sort:
                 body["sort"] = scan.sort
             res = self.transport.search(scan.index, body, timeout=self.request_timeout)
             stats.requests += 1
             stats.os_took_ms += int(res.get("took", 0))
             page = res["hits"]["hits"]
-            if page:
+            if target > self.doc_page_size and len(page) == self.doc_page_size:
+                # more than a page: read again from one consistent view of the data (that page is not reused)
+                tables, n_rows = self._deep_docs(scan, base, target, stats)
+            elif page:
                 tables.append(self._page_table(fields, page))
                 n_rows += len(page)
-        else:
-            pit = self.transport.open_pit(scan.index)
-            if pit is None:
-                raise PushdownError("deep pagination requires point-in-time support")
-            try:
-                search_after = None
-                while n_rows < target:
-                    body = dict(base, size=min(self.doc_page_size, target - n_rows),
-                                pit={"id": pit, "keep_alive": "2m"},
-                                sort=(scan.sort or []) + [{"_shard_doc": "asc"}])
-                    if search_after is not None:
-                        body["search_after"] = search_after
-                    res = self.transport.search(scan.index, body, timeout=self.request_timeout)
-                    stats.requests += 1
-                    stats.os_took_ms += int(res.get("took", 0))
-                    page = res["hits"]["hits"]
-                    if not page:
-                        break
-                    tables.append(self._page_table(fields, page))
-                    n_rows += len(page)
-                    search_after = page[-1]["sort"]
-                    pit = res.get("pit_id", pit)
-            finally:
-                self.transport.close_pit(pit)
         stats.rows = n_rows
         if not tables:
             return self._page_table(fields, []), stats
         return (tables[0] if len(tables) == 1 else concat_pages(tables)), stats
+
+    def _deep_docs(self, scan: DocScan, base: dict, target: int, stats: ScanStats) -> tuple[list[pa.Table], int]:
+        """More than a page of documents: a point in time paged with search_after on the _shard_doc tiebreaker;
+        on a cluster that does not know that sort (older OpenSearch versions: "No mapping found for [_shard_doc]
+        in order to sort on"), a scroll, remembered for the cluster."""
+        cluster = getattr(self.transport, "cluster_key", None)
+        if cluster is None or cluster not in NO_SHARD_DOC:
+            try:
+                return self._pit_docs(scan, base, target, stats)
+            except ProgrammingError as ex:
+                if "_shard_doc" not in str(ex):
+                    raise
+                if cluster is not None:
+                    NO_SHARD_DOC.add(cluster)
+                logger.info("osagg: %s does not sort a point in time on _shard_doc: deep reads by scroll",
+                            cluster or "this cluster")
+        scan.notes.append("read by scroll (this cluster does not page a point in time on _shard_doc)")
+        return self._scroll_docs(scan, base, target, stats)
+
+    def _pit_docs(self, scan: DocScan, base: dict, target: int, stats: ScanStats) -> tuple[list[pa.Table], int]:
+        tables: list[pa.Table] = []
+        n_rows = 0
+        pit = self.transport.open_pit(scan.index)
+        if pit is None:
+            raise PushdownError("deep pagination requires point-in-time support")
+        try:
+            search_after = None
+            while n_rows < target:
+                body = dict(base, size=min(self.doc_page_size, target - n_rows),
+                            pit={"id": pit, "keep_alive": "2m"},
+                            sort=(scan.sort or []) + [{"_shard_doc": "asc"}])
+                if search_after is not None:
+                    body["search_after"] = search_after
+                res = self.transport.search(scan.index, body, timeout=self.request_timeout)
+                stats.requests += 1
+                stats.os_took_ms += int(res.get("took", 0))
+                page = res["hits"]["hits"]
+                if not page:
+                    break
+                tables.append(self._page_table(scan.fields, page))
+                n_rows += len(page)
+                search_after = page[-1]["sort"]
+                pit = res.get("pit_id", pit)
+        finally:
+            self.transport.close_pit(pit)
+        return tables, n_rows
+
+    def _scroll_docs(self, scan: DocScan, base: dict, target: int, stats: ScanStats) -> tuple[list[pa.Table], int]:
+        tables: list[pa.Table] = []
+        n_rows = 0
+        # (a scroll counts its hits: track_total_hits false is refused in a scroll context)
+        body = {k: v for k, v in base.items() if k != "track_total_hits"}
+        body.update(size=min(self.doc_page_size, target), sort=scan.sort or ["_doc"])
+        pages = self.transport.scroll_pages(scan.index, body, timeout=self.request_timeout)
+        try:
+            for res in pages:
+                stats.requests += 1
+                stats.os_took_ms += int(res.get("took", 0))
+                page = res["hits"]["hits"][:target - n_rows]
+                if not page:
+                    break
+                tables.append(self._page_table(scan.fields, page))
+                n_rows += len(page)
+                if n_rows >= target:
+                    break
+        finally:
+            pages.close()
+        return tables, n_rows
 
     def _page_table(self, fields: list[Field], hits: list[dict]) -> pa.Table:
         arrays = {}

@@ -1,5 +1,22 @@
 # Changes
 
+## 0.2.14 — 5 Oct 2026
+
+**Raw rows with a large LIMIT on an older OpenSearch.** SQL Lab asks for up to 100,000 rows, and above one page
+(10,000 rows) osagg read the documents from a point in time paged with `search_after` on the `_shard_doc`
+tiebreaker. OpenSearch 2.x does not know that sort: every such query failed with `query_shard_exception: No mapping
+found for [_shard_doc] in order to sort on (all shards failed)`, even when only a few documents matched (reproduced on
+OpenSearch 2.19.3 with osagg 0.2.13). Now:
+- the first page is one plain search: when fewer documents than a page match (most SQL Lab queries), that is the
+  whole answer, with no point in time;
+- beyond a page, a point in time paged on `_shard_doc` where the cluster supports it (OpenSearch 3.8), else a scroll
+  (OpenSearch 2.19.3), remembered for the cluster. A scroll needs no other permission than `read`; its context is
+  cleared at the end. EXPLAIN says when a table was read by scroll.
+
+Checked on both versions with a 3-shard index: few matching rows with LIMIT 100000, 12,500 rows with LIMIT 100000,
+an ORDER BY over 15,000 rows: every row once, in order, the counts equal to `_count`. The lab suites pass with pages
+of 500 documents (ordering 39, oracle and mappings 181).
+
 ## 0.2.13 — 3 Oct 2026
 
 **A query of many aggregates plans in linear time.** The planner compared each aggregate of a query with every

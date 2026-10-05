@@ -32,7 +32,7 @@ The sections below explain each step and were all tested.
 | Superset | 6.x (or 5.0) installed with pip, Python 3.10–3.12. |
 | Platform | Linux x86-64 with glibc ≥ 2.28 for the offline wheelhouse (RHEL/Rocky 8+, Debian 11+, Ubuntu 20.04+). Other platforms: online install from PyPI or your pip mirror. |
 | Network | The Superset host (web server and Celery workers) reaches OpenSearch's HTTPS port (usually 9200). |
-| OpenSearch | 1.x, 2.x or 3.x. Point-in-time paging needs 2.4+. |
+| OpenSearch | 1.x, 2.x or 3.x. Raw rows beyond one page (10,000): a point in time paged on `_shard_doc` where the cluster supports it (checked on 3.8), else a scroll (checked on 2.19.3). |
 | Account | A service account with the role in step 1. |
 | CA | Optional: the PEM file of the CA that signed the OpenSearch certificates, readable by the user that runs Superset (e.g. `/etc/superset/opensearch-ca.pem`). Without it, use `verify_certs=false` (step 4). |
 
@@ -67,7 +67,7 @@ PUT _plugins/_security/api/rolesmapping/superset_osagg
 { "users": ["svc_superset"] }
 ```
 
-What each permission covers: `read` = searches, aggregations, point-in-time,
+What each permission covers: `read` = searches, aggregations, point-in-time, scroll,
 `_resolve/index` (table list); `indices:admin/mappings/get` = column list.
 Optional: `cluster:monitor/state` lets osagg read `search.max_buckets`; without it
 osagg assumes 65,535 (set `page_size` if you raised the cluster setting).

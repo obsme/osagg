@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Iterator
 
-from osagg.errors import OperationalError, ProgrammingError
+from osagg.errors import OperationalError, ProgrammingError, PushdownError
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,12 @@ class Transport:
     def close_pit(self, pit_id: str) -> None:
         return None
 
+    def scroll_pages(self, index: str, body: dict, keep_alive: str = "2m",
+                     timeout: float | None = None) -> Iterator[dict]:
+        """The answers of a scroll (the first search, then each next page): the deep read of a cluster whose
+        points in time cannot be paged with the _shard_doc tiebreaker. None when the transport has no scroll."""
+        raise PushdownError("deep pagination requires point-in-time or scroll support")
+
     def get_mapping(self, index: str) -> dict:
         raise NotImplementedError
 
@@ -147,6 +153,7 @@ class DirectTransport(Transport):
             kwargs["client_key"] = client_key
         self.request_timeout = request_timeout
         self.client = OpenSearch(**kwargs)
+        self.cluster_key = f"{host}:{port}{url_prefix}"
         self._max_buckets: int | None = None
 
     def _call(self, fn, *args, **kwargs):
@@ -235,6 +242,30 @@ class DirectTransport(Transport):
             self.client.delete_pit(body={"pit_id": [pit_id]})
         except Exception:  # pylint: disable=broad-except
             logger.debug("could not delete PIT", exc_info=True)
+
+    def scroll_pages(self, index: str, body: dict, keep_alive: str = "2m",
+                     timeout: float | None = None) -> Iterator[dict]:
+        # every page checked as a search's (a scroll context missing shards would page through part of the
+        # documents); the context is cleared at the end, read to the end or not
+        params = {"request_timeout": timeout or self.request_timeout, "allow_partial_search_results": "false",
+                  "scroll": keep_alive}
+        res = self._call(self.client.search, index=index, body=body, params=params)
+        scroll_id = res.get("_scroll_id")
+        try:
+            while True:
+                check_complete(res, index)
+                yield res
+                if not (res.get("hits") or {}).get("hits") or not scroll_id:
+                    return
+                res = self._call(self.client.scroll, body={"scroll": keep_alive, "scroll_id": scroll_id},
+                                 params={"request_timeout": timeout or self.request_timeout})
+                scroll_id = res.get("_scroll_id") or scroll_id
+        finally:
+            if scroll_id:
+                try:
+                    self.client.clear_scroll(body={"scroll_id": [scroll_id]})
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug("could not clear the scroll", exc_info=True)
 
     def get_mapping(self, index: str) -> dict:
         return self._call(self.client.indices.get_mapping, index=index,
