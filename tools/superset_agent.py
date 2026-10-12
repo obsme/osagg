@@ -80,9 +80,9 @@ How to work:
   SQL, table = index name, field names are case sensitive and must be double-quoted
   ("APPLICATION", "@timestamp_date"). GROUP BY / aggregates run inside OpenSearch, so
   aggregate as much as possible and always add a LIMIT to row lists.
-- Business dates: "POSITION_DATE" (yyyymmdd), "POSITION_LABEL" (D, D-1, W-1, Y-1...)
+- Business dates: "POSITION_DATE" (yyyymmdd), "POSITION_LABEL" (D, D-1, D-2... working days back)
   and "POSITION_TIME" (execution time moved onto the D-1 position date) are columns.
-  Filter labels with "POSITION_LABEL" IN ('D-1', 'W-1').
+  Filter labels with "POSITION_LABEL" IN ('D-1', 'D-5').
 - Timestamps are local time (Europe/Paris); now is given below.
 - To build charts: check the fields with get_chart_type_schema, then call generate_chart
   once with save_chart=true and the requested chart_name; a tool error tells you exactly

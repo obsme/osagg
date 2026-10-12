@@ -7,7 +7,7 @@ Register them once, e.g. in ``superset_config.py``::
 
 They become callable in every osagg query (SQL Lab, calculated columns, metrics,
 filters). They run inside DuckDB on the small, already aggregated rows, and in the
-planner when an expression is a constant (``position_days('W-1')``). A filter that
+planner when an expression is a constant (``position_days('D-5')``). A filter that
 depends on a single keyword column, e.g. ``position_label("POSITION_DATE") IN ('D-1')``,
 is turned into a ``terms`` filter on that column and pushed down to OpenSearch.
 """
@@ -52,7 +52,7 @@ def apply(con: duckdb.DuckDBPyConnection) -> None:
     """Register the built-in and user functions on a DuckDB connection."""
     from osagg import calendar
 
-    # osagg_label(<yyyymmdd>, '<today>/<session>/<Y|->') -> 'D-1' / 'W-2' / 'Y-1' / NULL
+    # osagg_label(<yyyymmdd>, '<today>/<session>/<Y|->') -> 'D' / 'D-1' / 'D+1' / NULL (D labels only)
     con.create_function("osagg_label", calendar.label, [duckdb.sqltype("VARCHAR")] * 2,
                         duckdb.sqltype("VARCHAR"), null_handling="special",
                         exception_handling="return_null")

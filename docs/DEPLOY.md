@@ -206,8 +206,8 @@ curl -X POST https://<superset>/api/v1/database/ -H "Authorization: Bearer <toke
 | `url_prefix` | – | when OpenSearch sits behind a proxy path |
 | `enum_max_values`, `enum_cache_ttl` | 10000, 60 | single-column filters (labels, CASE mappings) are turned into terms filters when the column has at most this many values; value lists are cached this many seconds |
 | `label_timezone` | `local` | clock of the business-date labels (step 5b): `local` = the Superset host clock, like `datetime.now()`; or a zone such as `Europe/Paris` |
-| `label_cutoff` | `14:00` | session cut-off of the labels |
-| `label_years` | `true` | `Y-x` labels; `false` = exactly the old functions (that date reads `W-52`) |
+| `label_cutoff` | `14:00` | accepted, no effect since 0.2.15 (it set the session date of the W-x / Y-x labels) |
+| `label_years` | `true` | accepted, no effect since 0.2.15 (D labels only) |
 | `label_source`, `label_column` | `POSITION_DATE`, `POSITION_LABEL` | field(s) the label is computed from, tried in order, per index (`pattern:FIELD=format`, step 5b), and the column name; `label_source=none` turns it off |
 | `label_date_format` | `%Y%m%d` | format of keyword position dates without `=format` |
 | `label_time_source`, `label_time_column` | `@timestamp_date`, `POSITION_TIME` | execution time moved onto the D-1 position date (same rules as `label_source`), and its column name |
@@ -235,20 +235,18 @@ Then **Edit dataset**:
 
 Field names are case sensitive and keep their OpenSearch spelling (quote them).
 
-## 5b. Business-date labels (D, D-x, W-x, Y-x): built in
+## 5b. Business-date labels (D, D-x, D+x): built in
 
 Every index with a keyword `POSITION_DATE` (yyyymmdd) gets an extra column
 `POSITION_LABEL`, computed by osagg with your calendar rules. Nothing to install or
 configure.
 
-* Session date: Saturday and Sunday → Friday; Monday–Friday before 14:00 → the previous
-  business day; otherwise today.
-* `Y-x`: x × 364 days before the session date (same weekday, 52 weeks earlier). Your
-  functions had no Y rule; `label_years=false` in the URI gives exactly the old
-  labels (that date then reads `W-52`).
-* `W-x`: x × 7 days before the session date.
-* `D-x`: x = number of weekdays from the date to yesterday; `D` for today's position date
-  (and a weekend just before today, which no weekday follows).
+* `D-x`: x = number of working days (Monday to Friday) from the date to yesterday; `D` for
+  today's position date (and a weekend just before today, which no weekday follows). The
+  same weekday a week earlier is `D-5` more (`D-1` → `D-6` → `D-11`).
+* osagg 0.2.15: D labels only. The week and year labels `W-x` / `Y-x` are gone: a filter
+  on them selects nothing; `label_cutoff` / `label_years` are still accepted and change
+  nothing (they set the session date of those labels).
 * `D+x`: a position date x days after today (osagg 0.2.10; before, they were `D` too, so
   `POSITION_LABEL = 'D'` also asked for every later date).
 
@@ -257,9 +255,9 @@ Lab. osagg turns it into `POSITION_DATE` conditions:
 
 | You use | OpenSearch receives |
 |---|---|
-| `POSITION_LABEL IN ('D-1', 'W-1')` (native filter, chart filter, SQL) | `terms` on `POSITION_DATE` with the matching dates, computed from the calendar: no extra request |
+| `POSITION_LABEL IN ('D-1', 'D-6')` (native filter, chart filter, SQL) | `terms` on `POSITION_DATE` with the matching dates, computed from the calendar: no extra request |
 | `POSITION_LABEL = 'D'` | `term` on today's position date (one date) |
-| `LIKE 'W-%'`, `NOT IN`, `IS NULL` | one small aggregation listing the `POSITION_DATE` values (cached 60 s), then `terms` |
+| `LIKE 'D-1%'`, `NOT IN`, `IS NULL` | one small aggregation listing the `POSITION_DATE` values (cached 60 s), then `terms` |
 | `GROUP BY POSITION_LABEL` | composite aggregation on `POSITION_DATE`; DuckDB labels the buckets and merges them |
 | samples, drill to detail, `SELECT *` | the label is computed on the returned rows |
 
@@ -270,7 +268,7 @@ Dataset (**Edit dataset**):
    have it right away.
 2. **Metrics**: `latest_position_date` = `MAX("POSITION_DATE")`. Native filter:
    *Value* on `POSITION_LABEL`, **Sort by metric** `latest_position_date`, descending:
-   the list reads D-1, D-2, …, W-1, … .
+   the list reads D-1, D-2, D-3, … .
 3. **Settings → Cache timeout**: `300` (see below).
 
 Check in SQL Lab:
@@ -279,23 +277,23 @@ Check in SQL Lab:
 EXPLAIN
 SELECT "APPLICATION", COUNT(*) AS jobs
 FROM "batch-jobs"
-WHERE "POSITION_LABEL" IN ('D-1', 'W-1')
+WHERE "POSITION_LABEL" IN ('D-1', 'D-6')
 GROUP BY 1
 ```
 
-The plan shows `label filter D-1, W-1 (today 20260925, session date 20260924) ->
+The plan shows `label filter D-1, D-6 (today 20260925, session date 20260924) ->
 POSITION_DATE IN (2 date(s)) pushed down` and `"terms": {"POSITION_DATE": ["20260917",
 "20260924"]}`.
 
-**Compare position dates on one timeline (D-1 vs W-1 vs W-2).** Every index with
-`POSITION_DATE` and `@timestamp_date` also gets `POSITION_TIME` (TIMESTAMP): the execution
-time moved onto the D-1 position date, +7 days for W-1, +14 for W-2, +1 (or +3 on Monday)
-for D-2… Each position date keeps its own documents, even when one day executes two or
-three position dates. Tested in the lab, chart "Jobs by position date: D-1 vs W-1 / W-2":
+**Compare position dates on one timeline (D-1 vs D-6 vs D-11: the same weekday one and two
+weeks earlier).** Every index with `POSITION_DATE` and `@timestamp_date` also gets
+`POSITION_TIME` (TIMESTAMP): the execution time moved onto the D-1 position date, +7 days for
+D-6, +14 for D-11, +1 (or +3 on Monday) for D-2… Each position date keeps its own documents,
+even when one day executes two or three position dates. Chart "Jobs by position date":
 
 1. **Line Chart**, X-axis `POSITION_TIME`, time grain 10 minute, any metrics.
 2. **Dimensions**: `POSITION_LABEL`.
-3. **Filters**: `POSITION_LABEL` in `D-1`, `W-1`, `W-2` (any labels work).
+3. **Filters**: `POSITION_LABEL` in `D-1`, `D-6`, `D-11` (any labels work).
 4. Optional, to crop to the session: time range on `POSITION_TIME` → **Advanced**:
    `DATEADD(DATETIME("yesterday"), 14, hour)` to `DATEADD(DATETIME("today"), 10, hour)`.
 
@@ -306,14 +304,15 @@ draws the lines. A time range on `POSITION_TIME` needs a `POSITION_LABEL` filter
 200 position dates in play). After upgrading, **Sync columns from source** once so the
 dataset lists `POSITION_TIME` (Superset marks it temporal).
 
-**D and D-1 against the average of W-1..W-4.** Use a **Mixed Chart** (two queries on
-the same X-axis). Tested in a lab dashboard "Position dates - D, D-1 vs W-x":
+**D and D-1 against the average of the same weekday over the four weeks before.** Use a
+**Mixed Chart** (two queries on the same X-axis):
 
 1. **X-axis** `POSITION_TIME`, time grain 10 minute.
 2. **Query A**: metric `COUNT(*)` (or any), dimension `POSITION_LABEL`, filter
    `POSITION_LABEL` in `D`, `D-1`. This gives one line per label.
-3. **Query B**: metric *Custom SQL* `COUNT(*) / 4.0` labelled `Avg W-1..W-4`, no
-   dimension, filter `POSITION_LABEL` in `W-1`, `W-2`, `W-3`, `W-4`. This gives one line:
+3. **Query B**: metric *Custom SQL* `COUNT(*) / 4.0` labelled `Avg 4 weeks`, no
+   dimension, filter `POSITION_LABEL` in `D-6`, `D-11`, `D-16`, `D-21` (D-1's weekday one to
+   four weeks earlier). This gives one line:
    the four weeks added up per 10 minutes and divided by 4 (a missing week counts as 0).
 4. Customize: both series *Line*, Query B on the primary Y axis.
 
@@ -325,8 +324,8 @@ Other metrics in Query B:
   the four weeks;
 * MIN / MAX: the lowest / highest over the four weeks.
 
-The W-x follow your session rule: before 14:00 they are the weeks of D-1's session, and
-after 14:00 the weeks of D's session. On the dashboard, a time range filter on
+The D-x labels count working days from today (the 14:00 cut-off changes nothing since
+0.2.15). On the dashboard, a time range filter on
 `POSITION_TIME` (e.g. `DATEADD(DATETIME("yesterday"), 14, hour)` to
 `DATEADD(DATETIME("today"), 10, hour)`) crops every chart to the session.
 

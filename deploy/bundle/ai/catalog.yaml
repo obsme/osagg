@@ -12,7 +12,7 @@
 glossary:
   failed job: STATUS_INFO = 'FAILED'. Failure rate % = failed jobs * 100 / all jobs.
   position date / business date: POSITION_DATE (yyyymmdd), the business day a job computes, not the day it runs.
-  POSITION_LABEL: D, D-1, D-2... (business days before the session date), W-1, W-2... (same weekday 1, 2... weeks before), Y-1. Before 14:00 the session date is the previous business day. Filter with POSITION_LABEL IN ('D-1', 'W-1').
+  POSITION_LABEL: D (today's position date), D-1, D-2... (working days before today, Monday to Friday), D+1... (after today). D labels only: the same weekday a week earlier is D-5 more (D-1, D-6, D-11). Filter with POSITION_LABEL IN ('D-1', 'D-6').
   POSITION_TIME: execution time moved onto the D-1 position date, to overlay several position dates on one time axis (X axis POSITION_TIME, one line per POSITION_LABEL).
   today / yesterday: for executions use "@timestamp_date"; for business days use POSITION_LABEL = 'D' / 'D-1'.
   cost: CPU_COST_H_d, CPU hours used by the run.

@@ -607,7 +607,7 @@ class Planner:
 
     def _label_filter(self, c: exp.Expression, ctx: Ctx, base_query: dict,
                       notes: list[str]) -> dict | None:
-        """osagg_label(date, key) = 'D-1' / IN ('D-1', 'W-1', 'Y-1'): the dates that carry
+        """osagg_label(date, key) = 'D-1' / IN ('D-1', 'D-5'): the dates that carry
         these labels are known from the calendar, no OpenSearch round trip is needed.
         "D" also covers every later date: those are listed with a range-restricted
         enumeration (normally empty)."""
@@ -749,7 +749,7 @@ class Planner:
         if len(shifts) > self.MAX_TIME_DATES:
             raise ProgrammingError(
                 f"A time range on {spec_label(spec)} spans {len(shifts)} position dates: filter "
-                f"the position label as well (e.g. IN ('D-1', 'W-1', 'W-2')).")
+                f"the position label as well (e.g. IN ('D-1', 'D-2', 'D-5')).")
         if not shifts:
             notes.append("range on the aligned time: no position date in play, nothing to read")
             return MATCH_NONE

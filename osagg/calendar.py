@@ -5,13 +5,14 @@ Rules (same as the production `convert_date_or_label`):
 * now -> (today, session date): on weekdays before the cut-off (14:00) the session
   date is the previous business day (Monday -> Friday); on Saturday / Sunday it is
   Friday; otherwise it is today.
-* label of a position date (yyyymmdd), checked in this order:
-    Y-x  the date is x*364 days (52 weeks, same weekday) before the session date
-         (only when years are enabled)
-    W-x  the date is x*7 days before the session date
+* label of a position date (yyyymmdd):
     D-x  x = number of weekdays in [date, today - 1]   ("D" when 0)
     D+x  a position date after today, x calendar days later (osagg, 0.2.10: "D" is one date,
          today's; the production function also called the later dates "D")
+  (0.2.15, the team's request: D labels only. The week and year labels W-x and Y-x are gone:
+  a date a whole number of weeks before the session date is D-x like any other; a filter on
+  W-x / Y-x / M-x selects nothing. The connection setting label_years is still accepted and
+  changes nothing.)
 
 A label as of a given moment is encoded as "<today>/<session>/<Y|->" (e.g.
 "20260925/20260924/Y") so that one query uses one consistent calendar.
@@ -23,7 +24,7 @@ import datetime as dt
 import re
 from functools import lru_cache
 
-_LABEL = re.compile(r"^(D|W|Y)(?:([-+])(\d+))?$")
+_LABEL = re.compile(r"^(D)(?:([-+])(\d+))?$")       # (0.2.15) D labels only
 
 
 def effective_dates(now: dt.datetime, cutoff: dt.time = dt.time(14, 0)) -> tuple[dt.date, dt.date]:
@@ -70,37 +71,28 @@ def label(date_str: str | None, key: str) -> str | None:
         target = dt.datetime.strptime(date_str, "%Y%m%d").date()
     except ValueError:
         return None
-    today, session, years = _parse_key(key)
+    today, _session, _years = _parse_key(key)
     if target > today:                          # a later position date: D+1, D+2... (D is today's only)
         return f"D+{(target - today).days}"
-    delta = (session - target).days
-    if years and delta > 0 and delta % 364 == 0:
-        return f"Y-{delta // 364}"
-    if delta > 0 and delta % 7 == 0:
-        return f"W-{delta // 7}"
-    n = _weekdays_back(today, target)
+    n = _weekdays_back(today, target)           # (0.2.15) no W-x, no Y-x: every earlier date is D-x
     return f"D-{n}" if n > 0 else "D"
 
 
 def days_back(lbl: str, key: str) -> int | None:
     """Label -> number of calendar days before today (the production Case 2)."""
     m = _LABEL.match(lbl) if isinstance(lbl, str) else None
-    if not m or (m.group(2) == "+" and m.group(1) != "D"):
-        return None
-    kind, num = m.group(1), int(m.group(3) or 0)
-    today, session, _years = _parse_key(key)
-    if kind == "D" and m.group(2) == "+":
+    if not m:
+        return None                             # (0.2.15) W-x, Y-x, M-x: no such label any more
+    num = int(m.group(3) or 0)
+    today = _parse_key(key)[0]
+    if m.group(2) == "+":
         return -num                             # later than today
-    if kind == "D":
-        count = delta = 0
-        while count < num:
-            delta += 1
-            if (today - dt.timedelta(days=delta)).weekday() < 5:
-                count += 1
-        return delta
-    if kind == "W":
-        return (today - (session - dt.timedelta(days=7 * num))).days
-    return (today - (session - dt.timedelta(days=364 * num))).days
+    count = delta = 0
+    while count < num:
+        delta += 1
+        if (today - dt.timedelta(days=delta)).weekday() < 5:
+            count += 1
+    return delta
 
 
 def dates_for_labels(labels: list[str], key: str) -> list[str]:
@@ -139,7 +131,7 @@ def anchor(key: str) -> dt.date:
 @lru_cache(maxsize=65536)
 def shift_days(date_str: str | None, key: str) -> int | None:
     """Days to add to the execution time of a position date so that it lands on the D-1
-    position date (W-1: +7, W-2: +14...); None if the value is not a date."""
+    position date (the date a week before it: +7...); None if the value is not a date."""
     if date_str is None or len(date_str) != 8 or not date_str.isdigit():
         return None
     try:

@@ -187,12 +187,13 @@ class OpenSearchAggDialect(default.DefaultDialect):
             comment = f"OpenSearch {f.os_type}"
             if f.virtual and f.virtual.startswith("shift:"):
                 _k, src, ts = f.virtual.split(":", 2)
-                comment = (f"{ts} moved onto the D-1 position date (+7 days for W-1, +14 for "
-                           f"W-2...): X-axis to overlay position dates, with {src} labels as "
-                           "dimension")
+                comment = (f"{ts} moved onto the D-1 position date (+1 day for D-2, +7 days for "
+                           f"the date a week before...): X-axis to overlay position dates, with {src} "
+                           "labels as dimension")
             elif f.virtual:
                 src = f.virtual.split(":", 1)[1]
-                comment = (f"Business-date label of {src} computed by osagg (D, D-x, W-x, Y-x); "
+                comment = (f"Business-date label of {src} computed by osagg (D, D-x working days back, "
+                           f"D+x); "
                            f"filters on it are pushed down as {src} filters")
             elif f.agg_field and f.agg_field != f.name:
                 comment += f" (aggregations use {f.agg_field})"

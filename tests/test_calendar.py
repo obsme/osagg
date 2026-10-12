@@ -27,7 +27,7 @@ def ref_label(value: str | None, now: dt.datetime, years: bool) -> str | None:
     if value is None or not (value.isdigit() and len(value) == 8):
         return None
     try:
-        return (ref.convert_date_or_label_y if years else ref.convert_date_or_label)(value, now)
+        return ref.convert_date_or_label_d(value, now)      # (0.2.15) D labels only, with or without years
     except ValueError:
         return None
 
@@ -81,6 +81,10 @@ def test_labels_match_the_reference_functions():
         assert calendar.label(v, calendar.asof_key(NOWS["fri_1400"])) is None
 
 
+def _session(now: dt.datetime) -> dt.date:
+    return calendar.effective_dates(now)[1]
+
+
 def test_dates_for_labels_is_the_exact_inverse():
     labels = ["D", "D-1", "D-2", "D-5", "D-23", "W-1", "W-3", "W-52", "W-53", "Y-1", "Y-2",
               "d-1", "D-0", "W-01", "X-1"]
@@ -100,6 +104,10 @@ def test_dates_for_labels_is_the_exact_inverse():
             assert d_dates == [today.strftime("%Y%m%d")]
         assert calendar.dates_for_labels(["D+1"], key) == [(today + dt.timedelta(days=1)).strftime("%Y%m%d")]
         assert calendar.open_ended_from(["D", "W-1"], key) is None
+        # (0.2.15) D labels only: no week, year or month label exists, a date a week before the session date is D-x
+        assert all(calendar.dates_for_labels([lbl], key) == [] for lbl in ("W-1", "W-2", "Y-1", "M-1"))
+        week_before = (_session(now) - dt.timedelta(days=7)).strftime("%Y%m%d")
+        assert calendar.label(week_before, key).startswith("D-")
 
 
 def test_cutoff_weekend_and_label_timezone():
@@ -135,10 +143,11 @@ def test_planner_pushes_labels_without_any_request():
                       Settings(tz=ZoneInfo("Europe/Paris"), label_key=key),
                       lambda node: con.execute("SELECT " + node.sql(dialect="duckdb")).fetchone()[0])
     plan = planner.plan(sqlglot.parse_one(
-        f"SELECT SUM(\"AMOUNT\") FROM {T} WHERE \"POSITION_LABEL\" IN ('D-1', 'W-1', 'Y-1')", read="duckdb"))
+        f"SELECT SUM(\"AMOUNT\") FROM {T} WHERE \"POSITION_LABEL\" IN ('D-1', 'D-6', 'W-1', 'Y-1')", read="duckdb"))
     scan = plan.scans[0]
     assert scan.mode == "global"
-    assert scan.query == {"terms": {"POSITION_DATE": ["20250925", "20260917", "20260924"]}}
+    # (0.2.15) D labels only: W-1 and Y-1 select nothing; D-6 is six working days back (Thursday 17th)
+    assert scan.query == {"terms": {"POSITION_DATE": ["20260917", "20260924"]}}
     plan = planner.plan(sqlglot.parse_one(f'SELECT * FROM {T} LIMIT 5', read="duckdb"))
     assert [f.name for f in plan.scans[0].fields] == ["POSITION_DATE", "AMOUNT", "_id"]
     assert plan.residual.expressions[-1].alias == "POSITION_LABEL"
@@ -169,12 +178,12 @@ def test_planner_pushes_aligned_time_ranges_without_any_request():
     plan = planner.plan(sqlglot.parse_one(
         f"SELECT TIME_BUCKET(INTERVAL '10 minutes', \"POSITION_TIME\") AS t, \"POSITION_LABEL\", COUNT(*) "
         f"FROM {T} WHERE \"POSITION_TIME\" >= TIMESTAMP '2026-09-24 14:00:00' AND "
-        f"\"POSITION_LABEL\" IN ('D-1', 'W-1') GROUP BY 1, 2", read="duckdb"))
+        f"\"POSITION_LABEL\" IN ('D-1', 'D-6') GROUP BY 1, 2", read="duckdb"))
     scan = plan.scans[0]
     assert scan.mode == "two-level"
     kinds = sorted(k.kind for _, k in scan.keys)
     assert kinds == ["date_histogram", "terms"]
     q = str(scan.query)
-    # W-1 (20260917) is read from 2026-09-17 14:00 Paris = 12:00 UTC
+    # D-6 (20260917, six working days back) is read from 2026-09-17 14:00 Paris = 12:00 UTC
     assert "'20260917'" in q and "'2026-09-17T14:00:00.000+02:00'" in q
     con.close()

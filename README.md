@@ -109,7 +109,7 @@ osagg://TRINO_USER:PWD@trino-host:8443/default?transport=trino&trino_http_scheme
 | virtual datasets `SELECT … FROM (SELECT * FROM idx WHERE …) AS virtual_table` | flattened into one pushed-down query |
 | `JOIN` / `LEFT JOIN` / `USING` of two or more indices on equal fields, in aggregating queries | each index grouped by its join keys and GROUP BY columns in OpenSearch, keys of the smaller indices pushed to the bigger ones as `terms`; DuckDB joins the grouped rows (see Joins of indices) |
 
-| any other filter on **one** keyword column (CASE mappings, `LOWER`/`SUBSTRING`, `POSITION_LABEL LIKE 'W-%'`, Python functions) | the column's distinct values are listed (one small aggregation), the filter is evaluated on them, and `terms` on that column is pushed down |
+| any other filter on **one** keyword column (CASE mappings, `LOWER`/`SUBSTRING`, `POSITION_LABEL LIKE 'D-1%'`, Python functions) | the column's distinct values are listed (one small aggregation), the filter is evaluated on them, and `terms` on that column is pushed down |
 | `ORDER BY <column>` / `ORDER BY <position>` / arithmetic expressions on raw rows | sort / painless script sort, pushed down with LIMIT |
 
 Everything else (ORDER BY, LIMIT, HAVING, arithmetic on aggregates, window
@@ -124,15 +124,15 @@ fails with a message explaining why, instead of pulling billions of rows.
 ## Business-date labels (POSITION_LABEL)
 
 Indices with a keyword `POSITION_DATE` (yyyymmdd) get a computed column
-`POSITION_LABEL`: `D` (today's position date only), `D-x`, `W-x`, `Y-x` relative to the session date, and
-`D+x` for a position date x days after today (weekends →
-Friday, weekdays before 14:00 → previous business day). Filters on it are rewritten to
+`POSITION_LABEL`: `D` (today's position date only), `D-x` (x working days back: the weekdays from
+the date to yesterday) and `D+x` for a position date x days after today. Since 0.2.15 there are D labels
+only: no `W-x` / `Y-x` (the same weekday a week earlier is `D-5`). Filters on it are rewritten to
 `POSITION_DATE`: `=` / `IN` become a `terms` filter on the dates computed from the
 calendar (no extra request), other predicates go through the single-column value
 enumeration, and `GROUP BY` groups on the date in OpenSearch. URI parameters:
-`label_timezone` (default: the host clock), `label_cutoff` (`14:00`), `label_years`
-(`true`), `label_source` / `label_column` (`POSITION_DATE` / `POSITION_LABEL`,
-`label_source=none` turns it off). See docs/DEPLOY.md, step 5b.
+`label_timezone` (default: the host clock), `label_source` / `label_column` (`POSITION_DATE` / `POSITION_LABEL`,
+`label_source=none` turns it off); `label_cutoff` and `label_years` are still accepted and change
+nothing since 0.2.15 (they set the session date of the W-x / Y-x labels). See docs/DEPLOY.md, step 5b.
 
 The position date may have another name or form per index: `label_source` is a
 comma-separated list tried in order, `pattern:FIELD` items applying only to the indices
@@ -143,7 +143,7 @@ or the keyword `POSITION_DATE`. `label_time_source` picks the execution time the
 way. Indices without any of these fields simply have no label columns.
 
 `POSITION_TIME` is the execution time (`@timestamp_date`) moved onto the D-1 position
-date (+7 days for W-1, +14 for W-2…): use it as the X-axis with `POSITION_LABEL` as
+date (+1 day for D-2, +7 days for D-6, +14 for D-11…): use it as the X-axis with `POSITION_LABEL` as
 dimension to overlay position dates on one timeline. Time buckets on it group by
 position date and minute in OpenSearch; time ranges on it become one `@timestamp_date`
 range per position date.

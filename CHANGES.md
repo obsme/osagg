@@ -1,5 +1,17 @@
 # Changes
 
+## 0.2.15 — 12 Oct 2026
+
+**POSITION_LABEL: D labels only.** At the team's request the week and year labels are gone: `POSITION_LABEL` is
+`D` (today's position date), `D-x` (x working days back: the weekdays, Monday to Friday, from the date to
+yesterday, computed exactly as before) and `D+x` (a position date x days after today). A date a whole number of
+weeks before the session date, which read `W-x` (and `Y-x` 52 weeks earlier), now reads its `D-x` like any other:
+the same weekday a week earlier is `D-5` more (`D-1`, `D-6`, `D-11`...). A filter on `W-x`, `Y-x` or `M-x` selects
+nothing; `POSITION_TIME` moves each position date onto D-1 as before. The connection settings `label_years` and
+`label_cutoff` are still accepted and change nothing (they set the session date of the week and year labels).
+Saved charts or filters on `W-1`, `W-2`... must be changed to the matching `D-x` labels: `W-1` was the session date a
+week earlier, that is `D-5` after the 14:00 cut-off and `D-6` before it (`W-2`: `D-10` / `D-11`). DEPLOY.md (section 5b) and the bundle's catalog describe the D labels.
+
 ## 0.2.14 — 5 Oct 2026
 
 **Raw rows with a large LIMIT on an older OpenSearch.** SQL Lab asks for up to 100,000 rows, and above one page
