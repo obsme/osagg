@@ -201,3 +201,27 @@ def test_a_query_of_many_aggregates_plans_in_linear_time(planner, monkeypatch):
     assert isinstance(p.scans[0], AggScan) and len(calls) <= 10 * 32      # (0.2.12: more than 700)
     again = plan(planner, 'SELECT "APPLICATION", COUNT(*) AS n, COUNT(*) AS m, SUM("JOB_DURATION_d") AS s FROM jobs GROUP BY 1')
     assert isinstance(again.scans[0], AggScan)                      # (the same aggregate twice is still one)
+
+
+@pytest.mark.parametrize("step,want", [
+    ("INTERVAL '10' MINUTES", {"fixed_interval": "10m"}),
+    ("INTERVAL 1 HOUR", {"fixed_interval": "1h"}),
+    ("INTERVAL '1' MONTH", {"calendar_interval": "1M"}),
+])
+def test_opensearch_sql_histogram_of_a_timestamp_is_a_date_histogram(planner, step, want):
+    """HISTOGRAM(col, INTERVAL ...) as OpenSearch SQL writes it: one date_histogram, no raw documents."""
+    p = plan(planner, f'SELECT HISTOGRAM("@timestamp_date", {step}) AS b, COUNT(*) AS n FROM "{INDEX}" '
+                      f'WHERE "APPLICATION" = \'APP_A\' AND ("@timestamp_date" >= CURRENT_DATE OR '
+                      f'"@timestamp_date" < CURRENT_DATE - INTERVAL \'6\' DAY) '
+                      f'GROUP BY HISTOGRAM("@timestamp_date", {step}) LIMIT 1001')
+    scan = p.scans[0]
+    assert isinstance(scan, AggScan), scan
+    src = scan.describe()["aggs"]["g"]["composite"]["sources"][0]["k0"]["date_histogram"]
+    assert {k: src[k] for k in want} == want
+
+
+def test_opensearch_sql_histogram_of_a_number_is_a_histogram(planner):
+    p = plan(planner, f'SELECT HISTOGRAM("JOB_DURATION_d", 60) AS b, COUNT(*) FROM "{INDEX}" GROUP BY 1')
+    scan = p.scans[0]
+    assert isinstance(scan, AggScan), scan
+    assert scan.describe()["aggs"]["g"]["composite"]["sources"][0]["k0"]["histogram"]["interval"] == 60

@@ -160,6 +160,36 @@ def _strip(node: exp.Expression) -> exp.Expression:
     return node
 
 
+CALENDAR_STEPS = {"WEEK": "WEEK", "WEEKS": "WEEK", "MONTH": "MONTH", "MONTHS": "MONTH", "QUARTER": "QUARTER",
+                  "QUARTERS": "QUARTER", "YEAR": "YEAR", "YEARS": "YEAR"}
+
+
+def _opensearch_spellings(stmt: exp.Expression) -> exp.Expression:
+    """OpenSearch (and Elasticsearch) SQL's HISTOGRAM(col, INTERVAL n UNIT) is TIME_BUCKET(INTERVAL n UNIT, col) (one
+    week, month, quarter or year: DATE_TRUNC), HISTOGRAM(col, n) is FLOOR(col / n) * n: the same buckets, pushed down
+    as a date_histogram or a histogram. DuckDB's one-argument histogram() aggregate is left as it is."""
+    def tx(node: exp.Expression) -> exp.Expression:
+        if not (isinstance(node, exp.Anonymous) and str(node.this).upper() == "HISTOGRAM"
+                and len(node.expressions) == 2):
+            return node
+        col, step = node.expressions
+        st = _strip(step)
+        if isinstance(st, exp.Interval):
+            iv = _interval_parts(st)
+            if iv is None:
+                return node
+            n, unit = iv
+            if n == 1 and unit in CALENDAR_STEPS:
+                return exp.TimestampTrunc(this=col.copy(), unit=exp.Var(this=CALENDAR_STEPS[unit]))
+            return exp.DateBin(this=st.copy(), expression=col.copy())
+        if isinstance(st, exp.Literal) and not st.is_string:
+            return exp.Mul(this=exp.Floor(this=exp.Div(this=col.copy(), expression=st.copy())),
+                           expression=st.copy())
+        return node
+
+    return stmt.transform(tx, copy=False)
+
+
 def _key(node: exp.Expression) -> str:
     """Structural key used to match identical expressions (qualifiers removed)."""
     node = _strip(node)
@@ -249,7 +279,7 @@ class Planner:
 
     # ------------------------------------------------------------------ #
     def plan(self, stmt: exp.Expression) -> Plan:
-        stmt = stmt.copy()
+        stmt = _opensearch_spellings(stmt.copy())
         cte_names = {cte.alias_or_name for cte in stmt.find_all(exp.CTE)}
         self._cte_names = cte_names
         self._flatten_derived_tables(stmt)

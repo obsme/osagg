@@ -1,5 +1,17 @@
 # Changes
 
+## 0.2.16 — 13 Oct 2026
+
+**HISTOGRAM, as OpenSearch SQL writes it.** `HISTOGRAM("@timestamp_date", INTERVAL '10' MINUTES)` in the SELECT and
+the GROUP BY was not known to osagg: the buckets could not be pushed down, osagg asked for the raw documents and a
+query over a few days failed with "This query needs N raw documents ... expression over raw timestamp column".
+`HISTOGRAM(ts, INTERVAL n unit)` is now read as `TIME_BUCKET(INTERVAL n unit, ts)` (one `date_histogram` with a
+`fixed_interval`, in the connection's time zone), `HISTOGRAM(ts, INTERVAL 1 WEEK/MONTH/QUARTER/YEAR)` as `DATE_TRUNC`
+(a `calendar_interval`), and `HISTOGRAM(number, n)` as `FLOOR(number / n) * n` (a numeric `histogram`): the same
+buckets, computed in OpenSearch. DuckDB's one-argument `histogram()` aggregate is unchanged. Checked on the lab
+OpenSearch: a 10-minute HISTOGRAM over two one-hour windows (an OR of two time ranges) gives the same 12 buckets as
+TIME_BUCKET, their total equal to OpenSearch's `_count` of the two windows. Tests: 108 offline.
+
 ## 0.2.15 — 12 Oct 2026
 
 **POSITION_LABEL: D labels only.** At the team's request the week and year labels are gone: `POSITION_LABEL` is

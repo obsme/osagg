@@ -95,8 +95,8 @@ osagg://TRINO_USER:PWD@trino-host:8443/default?transport=trino&trino_http_scheme
 | `AND` / `OR` / `NOT`, constant sub-expressions (`now() - INTERVAL '1 hour'`) | bool query, constants folded |
 | `LOWER(col) = 'x'`, `CAST(ts AS DATE) = DATE '…'` | case-insensitive term, day range in the time zone |
 | `GROUP BY col` | composite `terms` (`missing_bucket` → NULL group) |
-| `DATE_TRUNC('second'…'year', ts)`, `TIME_BUCKET(INTERVAL 'n minutes/hours', ts)`, `CAST(ts AS DATE)` | `date_histogram` with `time_zone` |
-| `FLOOR(x / n) * n` | `histogram` |
+| `DATE_TRUNC('second'…'year', ts)`, `TIME_BUCKET(INTERVAL 'n minutes/hours', ts)`, `HISTOGRAM(ts, INTERVAL n unit)` (OpenSearch SQL), `CAST(ts AS DATE)` | `date_histogram` with `time_zone` |
+| `FLOOR(x / n) * n`, `HISTOGRAM(x, n)` (OpenSearch SQL) | `histogram` |
 | `COUNT(*)`, `COUNT(col)`, `SUM`, `AVG`, `MIN`, `MAX` (numeric, date, boolean, keyword) | doc_count, value_count, sum, min, max, terms(size 1) |
 | `COUNT(DISTINCT col)` | cardinality while it is exact (below `cardinality_precision`); at it, the values become keys of the buckets and DuckDB counts them (exact) |
 | `APPROX_COUNT_DISTINCT` | cardinality (an estimate above `cardinality_precision`) |
