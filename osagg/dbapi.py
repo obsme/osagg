@@ -552,26 +552,33 @@ class Cursor:
 
     # EXPLAIN ----------------------------------------------------------------
     def _explain(self, sql: str, analyze: bool, verbose: bool = False) -> "Cursor":
-        """EXPLAIN [ANALYZE] [VERBOSE] <query>. A few rows that SQL Lab shows at once: what osagg read the
-        fields as, each OpenSearch request on one row (compact JSON: open the cell or copy it to read it all),
-        then the DuckDB SQL; VERBOSE writes the requests indented, one JSON line per row."""
+        """EXPLAIN [ANALYZE] [VERBOSE] <query>. A few rows that SQL Lab shows at once: the query as osagg received
+        it, on one line (0.2.17: with the values Superset's Jinja put in it), what osagg read the fields as, each
+        OpenSearch request on one row (compact JSON: open the cell or copy it to read it all), then the DuckDB SQL;
+        VERBOSE writes the requests indented, one JSON line per row. A query that does not parse or plan: its line,
+        then why (a Jinja value that broke it is seen there)."""
+        from osagg import __version__
+        from osagg.translate import Untranslatable
+
+        lines: list[str] = [f"-- osagg {__version__}, {self.connection.transport.kind} transport, time zone "
+                            f"{self.connection.tz}",
+                            "-- the query as osagg received it (with the values of its Jinja), on one line:",
+                            one_line(sql)]
         try:
             stmt = sqlglot.parse_one(sql, read="duckdb")
-        except sqlglot.errors.ParseError as ex:
-            raise ProgrammingError(f"SQL syntax error: {ex}") from ex
-        rows: list[tuple] = []
-        named = {c.name for c in stmt.find_all(exp.Column) if c.name}     # before planning rewrites it
+            named = {c.name for c in stmt.find_all(exp.Column) if c.name}     # before planning rewrites it
+            plan = None if analyze else self.plan(stmt)
+        except (sqlglot.errors.ParseError, Error, Untranslatable) as ex:
+            why = f"SQL syntax error: {ex}" if isinstance(ex, sqlglot.errors.ParseError) else str(ex)
+            why = ANSI.sub("", why.replace("\x1b[4m", ">>").replace("\x1b[0m", "<<"))   # the faulty part pointed at
+            lines += [f"-- ERROR, not planned: {line}" for line in why.splitlines() if line.strip()]
+            return self._plan_rows(lines)
         if analyze:
             self._execute_one(stmt)
             plan = self.last_plan
             stats = {s.table: s for s in self.last_stats}
         else:
-            plan = self.plan(stmt)
             stats = {}
-        from osagg import __version__
-
-        lines: list[str] = [f"-- osagg {__version__}, {self.connection.transport.kind} transport, time zone "
-                            f"{self.connection.tz}"]
         lines += _fields_read(named, plan, self.connection.table_meta)
         for index in dict.fromkeys(getattr(s, "index", None) for s in plan.scans):
             if index:
@@ -596,14 +603,59 @@ class Cursor:
             lines.extend(plan.residual.sql(dialect="duckdb", pretty=True).splitlines())
         else:
             lines.append(plan.residual.sql(dialect="duckdb"))
-        # one line per row reads well in SQL Lab's result grid (like PostgreSQL EXPLAIN);
-        # indentation uses no-break spaces because HTML grids collapse normal ones
+        return self._plan_rows(lines)
+
+    def _plan_rows(self, lines: list[str]) -> "Cursor":
+        """EXPLAIN's lines as rows: one line per row reads well in SQL Lab's result grid (like PostgreSQL EXPLAIN);
+        indentation uses no-break spaces because HTML grids collapse normal ones."""
         rows = []
         for line in lines:
             stripped = line.lstrip(" ")
             rows.append(("\u00a0" * (len(line) - len(stripped)) + stripped,))
         self._set_result([("plan", "VARCHAR")], rows)
         return self
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")       # sqlglot underlines the faulty part of a query in its errors
+SPACE = " \t\r\n\f\v"
+
+
+def one_line(sql: str) -> str:
+    """A query on one line, as it was received (0.2.17: SQL Lab's EXPLAIN with Superset's Jinja, to see the values
+    its variables put in the query): each run of spaces, tabs and line breaks out of quotes is one space, a -- comment
+    is written /* */ so that it ends where it did, and what is quoted ('values', "names") is kept as it is."""
+    out: list[str] = []
+    i, n, gap = 0, len(sql), False
+    while i < n:
+        c = sql[i]
+        if c in SPACE:
+            gap, i = True, i + 1
+            continue
+        if gap and out:
+            out.append(" ")
+        gap = False
+        if c in "'\"`":                              # a quoted value or name, its doubled quotes inside it
+            j = i + 1
+            while j < n and (sql[j] != c or sql[j + 1:j + 2] == c):
+                j += 2 if sql[j] == c else 1
+            out.append(sql[i:j + 1])
+            i = j + 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            j = n if j < 0 else j
+            note = sql[i + 2:j].strip().replace("*/", "* /")
+            if note:
+                out.append(f"/* {note} */")
+            i, gap = j, True
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(" ".join(sql[i:j].split()))
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def _field_kind(f: Any) -> str:

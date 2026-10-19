@@ -205,11 +205,13 @@ Everything installs from one offline bundle (`scripts/make_bundle.sh`, `deploy/b
 
 ## EXPLAIN
 
-In SQL Lab: `EXPLAIN SELECT …` shows, in a few rows, the version of osagg, how each field
-the query names is read (per group of indices when they map it differently), every
-OpenSearch request (one row each, compact JSON: open the cell or copy it) and the residual
+In SQL Lab: `EXPLAIN SELECT …` shows, in a few rows, the version of osagg, the query as osagg
+received it on one line (with the values Superset's Jinja variables put in it, ready to copy),
+how each field the query names is read (per group of indices when they map it differently),
+every OpenSearch request (one row each, compact JSON: open the cell or copy it) and the residual
 DuckDB SQL; `EXPLAIN VERBOSE` writes the requests indented, `EXPLAIN ANALYZE SELECT …` also
-runs it and reports rows, requests and OpenSearch time per scan. Time bounds are ISO
+runs it and reports rows, requests and OpenSearch time per scan. A query that does not parse or
+plan shows its line, then `-- ERROR, not planned: …` with the reason. Time bounds are ISO
 instants with their offset (`"gte": "2026-09-30T21:00:58.251+02:00"`), as you would write
 them yourself.
 

@@ -1,5 +1,17 @@
 # Changes
 
+## 0.2.17 — 19 Oct 2026
+
+**EXPLAIN shows the query on one line, with the values of its Jinja.** In SQL Lab, a query with Jinja variables
+(`{{ from_dttm }}`, `{{ filter_values('x') }}`, template parameters, macros) reaches osagg after Superset has put
+the values in it. `EXPLAIN` now writes that query first, on one row and one line: the line breaks, tabs and runs of
+spaces made one space, a `--` comment written `/* ... */` (so that it still ends where it did), and every quoted
+value and name kept exactly as received: the values the variables put in the SQL are read there, and the line can
+be copied and run as it is. A query that does not parse or cannot be planned (a variable that rendered nothing, a
+value without its quotes) is no longer only an error: EXPLAIN shows its line, then `-- ERROR, not planned: ...` with
+the reason and the faulty part pointed at (`>>AND<<`). The same query run without EXPLAIN still fails as before.
+Checked in SQL Lab on the lab Superset with template parameters. Tests: 113 offline.
+
 ## 0.2.16 — 13 Oct 2026
 
 **HISTOGRAM, as OpenSearch SQL writes it.** `HISTOGRAM("@timestamp_date", INTERVAL '10' MINUTES)` in the SELECT and
